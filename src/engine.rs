@@ -865,7 +865,8 @@ fn generator_icon(id: &str) -> Option<Icon> {
         | ("snap", _)
         | ("extrepo", _)
         | ("flatpak", "installed" | "apps")
-        | ("online", "snap" | "flathub") => Icon::Package,
+        | ("pacman", "packages")
+        | ("online", "snap" | "flathub" | "aur") => Icon::Package,
         ("flatpak", "remotes") => Icon::Cloud,
         ("ssh", _) => Icon::Host,
         ("tmux", _) => Icon::Terminal,
@@ -906,6 +907,8 @@ fn loading_label(id: &str) -> String {
         "online:pypi-top" => "Fetching popular PyPI packages",
         "online:snap" => "Searching the Snap Store",
         "online:flathub" => "Searching Flathub",
+        "online:aur" => "Searching the AUR",
+        "pacman:packages" => "Reading pacman's package list",
         "apt:available" => "Searching apt packages",
         "extrepo:available" => "Fetching the extrepo index",
         "asdf:versions" => "Fetching versions with asdf",

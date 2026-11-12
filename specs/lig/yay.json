@@ -1,0 +1,296 @@
+{
+  "name": "yay",
+  "description": "AUR helper and pacman wrapper",
+  "options": [
+    {
+      "name": [
+        "-S",
+        "--sync"
+      ],
+      "description": "Install packages from the sync repositories"
+    },
+    {
+      "name": [
+        "-R",
+        "--remove"
+      ],
+      "description": "Remove packages"
+    },
+    {
+      "name": [
+        "-Q",
+        "--query"
+      ],
+      "description": "Query the local package database"
+    },
+    {
+      "name": [
+        "-U",
+        "--upgrade"
+      ],
+      "description": "Install package files"
+    },
+    {
+      "name": [
+        "-F",
+        "--files"
+      ],
+      "description": "Query the files database"
+    },
+    {
+      "name": [
+        "-D",
+        "--database"
+      ],
+      "description": "Modify the package database"
+    },
+    {
+      "name": [
+        "-T",
+        "--deptest"
+      ],
+      "description": "Check dependencies"
+    },
+    {
+      "name": [
+        "-V",
+        "--version"
+      ],
+      "description": "Show the version"
+    },
+    {
+      "name": [
+        "-h",
+        "--help"
+      ],
+      "description": "Show help"
+    },
+    {
+      "name": [
+        "-Y",
+        "--yay"
+      ],
+      "description": "yay-specific operations"
+    },
+    {
+      "name": [
+        "-G",
+        "--getpkgbuild"
+      ],
+      "description": "Download the PKGBUILD of packages"
+    },
+    {
+      "name": [
+        "-P",
+        "--show"
+      ],
+      "description": "Show information about the helper and the system"
+    },
+    {
+      "name": [
+        "-a",
+        "--aur"
+      ],
+      "description": "Only work with AUR packages"
+    },
+    {
+      "name": "--repo",
+      "description": "Only work with repository packages"
+    },
+    {
+      "name": "--devel",
+      "description": "Also check -git and other development packages for updates"
+    },
+    {
+      "name": [
+        "-y",
+        "--refresh"
+      ],
+      "description": "Download fresh package databases (-S, -F)"
+    },
+    {
+      "name": [
+        "-u",
+        "--sysupgrade"
+      ],
+      "description": "Upgrade installed packages (-S), list upgradable ones (-Q)"
+    },
+    {
+      "name": "-s",
+      "description": "Search (-S, -Q, -F); remove unneeded dependencies (-R)"
+    },
+    {
+      "name": "-n",
+      "description": "Remove configuration files (-R); native packages only (-Q)"
+    },
+    {
+      "name": "-i",
+      "description": "Show package information (-S, -Q)"
+    },
+    {
+      "name": "-l",
+      "description": "List a repository's packages (-S); list files (-Q, -F)"
+    },
+    {
+      "name": "-c",
+      "description": "Clean the package cache (-S); remove dependents (-R); show changelog (-Q)"
+    },
+    {
+      "name": [
+        "-g",
+        "--groups"
+      ],
+      "description": "Show package groups (-S, -Q)"
+    },
+    {
+      "name": [
+        "-q",
+        "--quiet"
+      ],
+      "description": "Show less information"
+    },
+    {
+      "name": [
+        "-e",
+        "--explicit"
+      ],
+      "description": "Explicitly installed packages only (-Q)"
+    },
+    {
+      "name": "-d",
+      "description": "Skip dependency checks (-S, -R, -U); dependencies only (-Q)"
+    },
+    {
+      "name": [
+        "-t",
+        "--unrequired"
+      ],
+      "description": "Packages not required by others (-Q)"
+    },
+    {
+      "name": [
+        "-k",
+        "--check"
+      ],
+      "description": "Check that package files exist (-Q)"
+    },
+    {
+      "name": [
+        "-o",
+        "--owns"
+      ],
+      "description": "Find the package that owns a file (-Q)"
+    },
+    {
+      "name": "-p",
+      "description": "Query a package file (-Q); print what would be done (-S, -R, -U)"
+    },
+    {
+      "name": [
+        "-w",
+        "--downloadonly"
+      ],
+      "description": "Download packages without installing them (-S)"
+    },
+    {
+      "name": [
+        "-v",
+        "--verbose"
+      ],
+      "description": "Show more output"
+    },
+    {
+      "name": "--needed",
+      "description": "Don't reinstall packages that are up to date"
+    },
+    {
+      "name": "--noconfirm",
+      "description": "Don't ask for confirmation"
+    },
+    {
+      "name": "--asdeps",
+      "description": "Install as a dependency"
+    },
+    {
+      "name": "--asexplicit",
+      "description": "Install as explicitly installed"
+    },
+    {
+      "name": "--overwrite",
+      "description": "Overwrite conflicting files matching this glob",
+      "args": {
+        "name": "glob"
+      }
+    },
+    {
+      "name": "--ignore",
+      "description": "Don't upgrade this package",
+      "args": {
+        "name": "package",
+        "generators": [
+          {
+            "builtin": "pacman:packages"
+          }
+        ]
+      }
+    },
+    {
+      "name": "--color",
+      "description": "Colorize the output",
+      "args": {
+        "name": "when",
+        "suggestions": [
+          "auto",
+          "always",
+          "never"
+        ]
+      }
+    },
+    {
+      "name": [
+        "-r",
+        "--root"
+      ],
+      "description": "Use a different installation root",
+      "args": {
+        "name": "path",
+        "template": "folders"
+      }
+    },
+    {
+      "name": [
+        "-b",
+        "--dbpath"
+      ],
+      "description": "Use a different database location",
+      "args": {
+        "name": "path",
+        "template": "folders"
+      }
+    },
+    {
+      "name": "--config",
+      "description": "Use a different config file",
+      "args": {
+        "name": "file",
+        "template": "filepaths"
+      }
+    }
+  ],
+  "args": {
+    "name": "package",
+    "isOptional": true,
+    "isVariadic": true,
+    "generators": [
+      {
+        "builtin": "pacman:packages"
+      },
+      {
+        "builtin": "pacman:files"
+      },
+      {
+        "builtin": "online:aur"
+      }
+    ]
+  }
+}

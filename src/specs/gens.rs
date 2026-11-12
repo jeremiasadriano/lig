@@ -865,26 +865,111 @@ pub fn prefixed_files(prefix: String) -> Generator {
         let Some(rest) = cur.strip_prefix(prefix.as_str()) else {
             return vec![sug(prefix.clone()).desc("local file").insert(prefix.clone())];
         };
-        let dir_part = rest.rfind('/').map_or("", |i| &rest[..=i]);
-        let dir = if let Some(r) = dir_part.strip_prefix("~/") {
-            dirs::home_dir().unwrap_or_default().join(r)
-        } else {
-            cx.cwd.join(dir_part)
-        };
-        let mut v: Vec<SuggestionDef> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if e.path().is_dir() { sug(format!("{name}/")).kind(Kind::Folder) } else { sug(name).kind(Kind::File) }
-            })
-            .collect();
-        v.sort_by(|a, b| a.meta.names[0].cmp(&b.meta.names[0]));
-        v
+        dir_entries(cx, rest, |_| true)
     })
     .trigger(Trigger::Chars("/".into()))
     .query_after("/")
+}
+
+/// Folders, and the files `keep` accepts, in the directory part of `typed` (for generators
+/// with `Trigger::Chars("/")` and `query_after("/")`).
+fn dir_entries(cx: &GenCtx, typed: &str, keep: impl Fn(&str) -> bool) -> Vec<SuggestionDef> {
+    let dir_part = typed.rfind('/').map_or("", |i| &typed[..=i]);
+    let dir = if let Some(r) = dir_part.strip_prefix("~/") {
+        dirs::home_dir().unwrap_or_default().join(r)
+    } else {
+        cx.cwd.join(dir_part)
+    };
+    let mut v: Vec<SuggestionDef> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.path().is_dir() {
+                Some(sug(format!("{name}/")).kind(Kind::Folder))
+            } else {
+                keep(&name).then(|| sug(name).kind(Kind::File))
+            }
+        })
+        .collect();
+    v.sort_by(|a, b| a.meta.names[0].cmp(&b.meta.names[0]));
+    v
+}
+
+#[cfg(test)]
+mod dir_entries_tests {
+    use super::*;
+
+    /// A fresh directory with `pkg/` (holding `a.pkg.tar.zst`, `notes.txt`, `inner/`),
+    /// `b.pkg.tar.xz`, `readme.md` and `zdir/` at the top.
+    fn tree(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("lig-dir-entries-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["pkg/inner", "zdir"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        for f in ["pkg/a.pkg.tar.zst", "pkg/notes.txt", "b.pkg.tar.xz", "readme.md"] {
+            std::fs::write(root.join(f), "").unwrap();
+        }
+        root
+    }
+
+    fn list(cwd: &Path, typed: &str, keep: impl Fn(&str) -> bool) -> Vec<(String, Option<Kind>)> {
+        let tokens = [typed.to_string()];
+        let cx = GenCtx { cwd, env: &[], tokens: &tokens, timeout: std::time::Duration::from_secs(1), remote: None };
+        dir_entries(&cx, typed, keep).into_iter().map(|s| (s.meta.names[0].clone(), s.kind)).collect()
+    }
+
+    fn names(v: &[(String, Option<Kind>)]) -> Vec<&str> {
+        v.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    #[test]
+    fn folders_always_files_only_when_kept_sorted() {
+        let root = tree("filter");
+        let all = list(&root, "", |_| true);
+        assert_eq!(names(&all), ["b.pkg.tar.xz", "pkg/", "readme.md", "zdir/"]);
+        assert_eq!(all[0].1, Some(Kind::File));
+        assert_eq!(all[1].1, Some(Kind::Folder));
+
+        let pkgs = list(&root, "", |n| n.contains(".pkg.tar"));
+        assert_eq!(names(&pkgs), ["b.pkg.tar.xz", "pkg/", "zdir/"]);
+        // Folders are kept even when the filter rejects every file.
+        assert_eq!(names(&list(&root, "", |_| false)), ["pkg/", "zdir/"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lists_the_directory_part_of_what_is_typed() {
+        let root = tree("dirpart");
+        let pkgs = |typed: &str| names(&list(&root, typed, |n| n.contains(".pkg.tar"))).join(" ");
+        // Text after the last `/` is the query, filtered later: it doesn't change the listing.
+        assert_eq!(pkgs("pkg/"), "a.pkg.tar.zst inner/");
+        assert_eq!(pkgs("pkg/a.p"), "a.pkg.tar.zst inner/");
+        assert_eq!(pkgs("pkg/inner/"), "");
+        assert_eq!(pkgs("re"), "b.pkg.tar.xz pkg/ zdir/");
+        assert_eq!(pkgs("./pkg/"), "a.pkg.tar.zst inner/");
+        assert_eq!(pkgs("zdir/../pkg/"), "a.pkg.tar.zst inner/");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn absolute_paths_ignore_the_cwd() {
+        let root = tree("abs");
+        let typed = format!("{}/pkg/", root.display());
+        assert_eq!(names(&list(Path::new("/nonexistent"), &typed, |_| true)), ["a.pkg.tar.zst", "inner/", "notes.txt"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_or_unreadable_directories_give_nothing() {
+        let root = tree("missing");
+        assert!(list(&root, "nope/", |_| true).is_empty());
+        // A file where a folder is expected.
+        assert!(list(&root, "readme.md/", |_| true).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 pub fn docker_contexts() -> Generator {
@@ -1023,6 +1108,8 @@ pub const BUILTIN_IDS: &[(&str, &str)] = &[
     ("flatpak:installed", "installed flatpak apps and runtimes"),
     ("flatpak:apps", "installed flatpak apps"),
     ("flatpak:remotes", "flatpak remotes"),
+    ("pacman:packages", "packages for the operation on the line (sync, installed, groups)"),
+    ("pacman:files", "package files for -U and -Qp"),
     ("extrepo:available", "repositories in the extrepo index"),
     ("extrepo:enabled", "enabled extrepo repositories"),
     ("extrepo:disabled", "disabled extrepo repositories"),
@@ -1043,6 +1130,7 @@ pub const BUILTIN_IDS: &[(&str, &str)] = &[
     ("online:pypi-top", "the 15,000 most downloaded PyPI packages"),
     ("online:snap", "Snap Store search"),
     ("online:flathub", "Flathub search (local appstream when offline)"),
+    ("online:aur", "AUR search (yay, paru)"),
 ];
 
 /// Native generators referenced by id from spec files (`{"builtin": "git:branches"}`).
@@ -1117,6 +1205,8 @@ pub fn builtin(id: &str) -> Option<Generator> {
         "flatpak:installed" => flatpak_installed(false),
         "flatpak:apps" => flatpak_installed(true),
         "flatpak:remotes" => flatpak_remotes(),
+        "pacman:packages" => pacman_packages(),
+        "pacman:files" => pacman_files(),
         "extrepo:available" => extrepo_available(),
         "extrepo:enabled" => extrepo_installed(Some(true)),
         "extrepo:disabled" => extrepo_installed(Some(false)),
@@ -1128,6 +1218,7 @@ pub fn builtin(id: &str) -> Option<Generator> {
         "online:pypi-top" => pypi_top(),
         "online:snap" => snap_store(),
         "online:flathub" => flathub(),
+        "online:aur" => aur(),
         "cargo:packages" => cargo_packages(),
         "cargo:installed" => cargo_installed(),
         "cargo:features" => cargo_features(),
@@ -1737,6 +1828,328 @@ mod flatpak_tests {
         assert_eq!(gens("uninstall"), ["flatpak:installed"]);
         assert_eq!(gens("run"), ["flatpak:apps"]);
         assert_eq!(gens("remote-delete"), ["flatpak:remotes"]);
+    }
+}
+
+// ---------------------------------------------------------------- pacman, yay, paru
+
+/// What a pacman (or yay/paru) line is doing: the command, its operation (`S` in `-Syu`,
+/// `--sync`) and the lowercase modifiers (`y`, `u`).
+#[derive(Debug, Default, PartialEq)]
+struct PacmanLine {
+    cmd: String,
+    op: Option<char>,
+    flags: Vec<char>,
+}
+
+/// Read from the words before the cursor, starting after the last `pacman`/`yay`/`paru`
+/// (so `sudo -S pacman -R x` is a remove).
+fn pacman_line(tokens: &[String]) -> PacmanLine {
+    let before = &tokens[..tokens.len().saturating_sub(1)];
+    let start = before.iter().rposition(|t| matches!(t.rsplit('/').next(), Some("pacman" | "yay" | "paru")));
+    let mut line = PacmanLine::default();
+    let Some(start) = start else { return line };
+    line.cmd = before[start].rsplit('/').next().unwrap_or_default().to_string();
+    for t in &before[start + 1..] {
+        if t == "--" {
+            break;
+        }
+        let letters: Vec<char> = if let Some(long) = t.strip_prefix("--") {
+            let c = match long {
+                "sync" => 'S',
+                "remove" => 'R',
+                "query" => 'Q',
+                "upgrade" => 'U',
+                "files" => 'F',
+                "database" => 'D',
+                "deptest" => 'T',
+                "getpkgbuild" => 'G',
+                "show" => 'P',
+                "search" => 's',
+                "groups" => 'g',
+                "file" => 'p',
+                "owns" => 'o',
+                "list" => 'l',
+                "clean" => 'c',
+                _ => continue,
+            };
+            vec![c]
+        } else if let Some(short) = t.strip_prefix('-') {
+            short.chars().collect()
+        } else {
+            continue;
+        };
+        for c in letters {
+            if c.is_ascii_uppercase() {
+                line.op.get_or_insert(c);
+            } else if c.is_ascii_lowercase() && !line.flags.contains(&c) {
+                line.flags.push(c);
+            }
+        }
+    }
+    line
+}
+
+#[derive(Debug, PartialEq)]
+enum PacmanWants {
+    /// Packages in the sync databases, and package groups.
+    Sync,
+    /// Package groups only (`-Sg`).
+    Groups,
+    Installed,
+    /// Package files (`-U`, `-Qp`).
+    Files,
+    Nothing,
+}
+
+fn pacman_wants(l: &PacmanLine) -> PacmanWants {
+    let has = |c| l.flags.contains(&c);
+    match l.op {
+        // `-Sc` cleans the cache and `-Sl` lists a repository: no package names.
+        Some('S') if has('c') || has('l') => PacmanWants::Nothing,
+        Some('S') if has('g') => PacmanWants::Groups,
+        Some('S') => PacmanWants::Sync,
+        // yay/paru: `-G` downloads a PKGBUILD; no operation means "search and install".
+        Some('G') => PacmanWants::Sync,
+        None if l.cmd != "pacman" && !l.cmd.is_empty() => PacmanWants::Sync,
+        Some('Q') if has('p') => PacmanWants::Files,
+        // `-Qo` takes any file and `-Qg` a group: leave both alone.
+        Some('Q') if has('o') || has('g') => PacmanWants::Nothing,
+        Some('R' | 'Q' | 'D') => PacmanWants::Installed,
+        Some('U') => PacmanWants::Files,
+        _ => PacmanWants::Nothing,
+    }
+}
+
+/// `pacman -Ss` / `pacman -Qs` output: a `repo/name version [(groups)] [[installed]]` line,
+/// then the description indented on the next line. The first repo listing a name wins.
+fn pacman_search_output(out: &str) -> Vec<SuggestionDef> {
+    let mut v: Vec<SuggestionDef> = vec![];
+    let mut seen = std::collections::HashSet::new();
+    let mut lines = out.lines().peekable();
+    while let Some(head) = lines.next() {
+        if head.is_empty() || head.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let mut words = head.split_whitespace();
+        let Some((repo, name)) = words.next().and_then(|w| w.split_once('/')) else { continue };
+        let version = words.next().unwrap_or("");
+        let desc = lines.next_if(|l| l.starts_with(char::is_whitespace)).map_or("", str::trim);
+        if !seen.insert(name.to_string()) {
+            continue;
+        }
+        let d = if repo == "local" {
+            format!("{version} · {desc}")
+        } else {
+            let installed = if head.contains("[installed") { " · installed" } else { "" };
+            format!("{repo} {version}{installed} · {desc}")
+        };
+        v.push(sug(name).desc(d));
+    }
+    v
+}
+
+/// Package groups (`pacman -Sg` with no argument prints one per line).
+fn pacman_groups(cx: &GenCtx) -> Vec<SuggestionDef> {
+    let mut groups = cx.lines(&["pacman", "-Sg"]);
+    groups.sort();
+    groups.dedup();
+    groups.into_iter().map(|g| sug(g).desc("package group")).collect()
+}
+
+/// Package names for the operation on the line: the sync databases (`-S`), installed
+/// packages (`-R`, `-Q`, `-D`) or package groups (`-Sg`). Read locally, no network.
+pub fn pacman_packages() -> Generator {
+    gen_fn("pacman:packages", |cx| match pacman_wants(&pacman_line(cx.tokens)) {
+        PacmanWants::Sync => {
+            let mut v = cx.run(&["pacman", "-Ss"]).map(|o| pacman_search_output(&o)).unwrap_or_default();
+            v.extend(pacman_groups(cx));
+            v
+        }
+        PacmanWants::Groups => pacman_groups(cx),
+        PacmanWants::Installed => cx.run(&["pacman", "-Qs"]).map(|o| pacman_search_output(&o)).unwrap_or_default(),
+        PacmanWants::Files | PacmanWants::Nothing => vec![],
+    })
+    .ttl(60_000)
+}
+
+/// Package files and folders for `-U` and `-Qp`.
+pub fn pacman_files() -> Generator {
+    gen_fn("pacman:files", |cx| {
+        if pacman_wants(&pacman_line(cx.tokens)) != PacmanWants::Files {
+            return vec![];
+        }
+        dir_entries(cx, cx.current(), |name| name.contains(".pkg.tar"))
+    })
+    .trigger(Trigger::Chars("/".into()))
+    .query_after("/")
+}
+
+/// AUR search results (the RPC API's JSON) → suggestions, most popular first, then names
+/// starting with `q` ahead. Empty for an error (`Too many package results.` for short queries).
+fn aur_results(q: &str, v: &serde_json::Value) -> Vec<SuggestionDef> {
+    if v["type"] != "search" {
+        return vec![];
+    }
+    let mut results: Vec<&serde_json::Value> = v["results"].as_array().into_iter().flatten().collect();
+    results.sort_by(|a, b| {
+        let p = |x: &serde_json::Value| x["Popularity"].as_f64().unwrap_or(0.0);
+        p(b).partial_cmp(&p(a)).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let list = results
+        .into_iter()
+        .take(50)
+        .filter_map(|r| {
+            let votes = match r["NumVotes"].as_u64().unwrap_or(0) {
+                1 => "1 vote".to_string(),
+                n => format!("{n} votes"),
+            };
+            let stale = if r["OutOfDate"].is_null() { "" } else { " · out of date" };
+            let desc = format!(
+                "AUR {} · {votes}{stale} · {}",
+                r["Version"].as_str().unwrap_or(""),
+                r["Description"].as_str().unwrap_or("").trim()
+            );
+            Some(sug(r["Name"].as_str()?).desc(desc).priority(45.0))
+        })
+        .collect();
+    rank_by_prefix(q, list)
+}
+
+/// AUR search for yay and paru, when the line installs (`-S`, `-G`, or no operation).
+pub fn aur() -> Generator {
+    gen_fn("online:aur", |cx| {
+        let q = cx.current();
+        if q.chars().count() < 2 || q.starts_with('-') || q.contains('/') {
+            return vec![];
+        }
+        let line = pacman_line(cx.tokens);
+        if line.cmd == "pacman" || !matches!(pacman_wants(&line), PacmanWants::Sync | PacmanWants::Groups) {
+            return vec![];
+        }
+        let url = format!("https://aur.archlinux.org/rpc/v5/search/{}?by=name", urlencode(q));
+        http_json(cx, &url, None).map(|v| aur_results(q, &v)).unwrap_or_default()
+    })
+    .trigger(Trigger::Change)
+    .unfiltered()
+    .ttl(30 * 60_000)
+}
+
+#[cfg(test)]
+mod pacman_tests {
+    use super::*;
+
+    fn line(s: &str) -> PacmanLine {
+        let mut t: Vec<String> = s.split(' ').map(str::to_string).collect();
+        t.push(String::new()); // the word under the cursor
+        pacman_line(&t)
+    }
+
+    fn wants(s: &str) -> PacmanWants {
+        pacman_wants(&line(s))
+    }
+
+    fn names(v: &[SuggestionDef]) -> Vec<&str> {
+        v.iter().map(|s| s.meta.names[0].as_str()).collect()
+    }
+
+    fn desc(s: &SuggestionDef) -> &str {
+        s.meta.description.as_deref().unwrap_or("")
+    }
+
+    #[test]
+    fn reads_the_operation() {
+        assert_eq!(line("pacman -Syu"), PacmanLine { cmd: "pacman".into(), op: Some('S'), flags: vec!['y', 'u'] });
+        assert_eq!(line("pacman --sync --refresh").op, Some('S'));
+        assert_eq!(line("pacman --remove").op, Some('R'));
+        assert_eq!(line("pacman -Q --file").flags, ['p']);
+        assert_eq!(line("pacman").op, None);
+        // sudo's own flags (`-S` reads a password) don't count.
+        assert_eq!(line("sudo -S /usr/bin/pacman -Rns foo").op, Some('R'));
+        assert_eq!(line("paru -G").cmd, "paru");
+        assert_eq!(line("ls -S").cmd, "");
+        // The word under the cursor is not part of the line yet.
+        let t: Vec<String> = ["pacman", "-R"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(pacman_line(&t).op, None);
+    }
+
+    #[test]
+    fn what_each_operation_completes() {
+        assert_eq!(wants("pacman -S"), PacmanWants::Sync);
+        assert_eq!(wants("pacman -Syu --needed"), PacmanWants::Sync);
+        assert_eq!(wants("pacman -Ss"), PacmanWants::Sync);
+        assert_eq!(wants("pacman -Sg"), PacmanWants::Groups);
+        assert_eq!(wants("pacman -Scc"), PacmanWants::Nothing);
+        assert_eq!(wants("pacman -Sl"), PacmanWants::Nothing);
+        assert_eq!(wants("pacman -Rns"), PacmanWants::Installed);
+        assert_eq!(wants("pacman -Qi"), PacmanWants::Installed);
+        assert_eq!(wants("pacman -D --asdeps"), PacmanWants::Installed);
+        assert_eq!(wants("pacman -Qo"), PacmanWants::Nothing);
+        assert_eq!(wants("pacman -Qp"), PacmanWants::Files);
+        assert_eq!(wants("pacman -U"), PacmanWants::Files);
+        assert_eq!(wants("pacman -F"), PacmanWants::Nothing);
+        assert_eq!(wants("pacman"), PacmanWants::Nothing);
+        assert_eq!(wants("yay"), PacmanWants::Sync);
+        assert_eq!(wants("paru -G"), PacmanWants::Sync);
+        assert_eq!(wants("yay -Rns"), PacmanWants::Installed);
+    }
+
+    #[test]
+    fn parses_search_output() {
+        let out = "core/acl 2.4.0-1 [installed]\n    Access control list utilities\n\
+                   extra/firefox 160.0-1\n    Fast, Private & Safe Web Browser\n\
+                   extra/qt6-base 6.10.0-1 (qt6) [installed: 6.9.3-1]\n    A cross-platform framework\n\
+                   core-testing/acl 2.4.1-1\n    Access control list utilities\n\
+                   extra/nodesc 1.0-1\n\
+                   extra/next 2.0-1\n    Next one\n";
+        let v = pacman_search_output(out);
+        assert_eq!(names(&v), ["acl", "firefox", "qt6-base", "nodesc", "next"]);
+        assert_eq!(desc(&v[0]), "core 2.4.0-1 · installed · Access control list utilities");
+        assert_eq!(desc(&v[1]), "extra 160.0-1 · Fast, Private & Safe Web Browser");
+        assert_eq!(desc(&v[2]), "extra 6.10.0-1 · installed · A cross-platform framework");
+        assert_eq!(desc(&v[3]), "extra 1.0-1 · ");
+        assert_eq!(desc(&v[4]), "extra 2.0-1 · Next one");
+
+        let v = pacman_search_output("local/bash 5.3.20-1\n    The GNU Bourne Again shell\n");
+        assert_eq!(desc(&v[0]), "5.3.20-1 · The GNU Bourne Again shell");
+        assert!(pacman_search_output("").is_empty());
+    }
+
+    #[test]
+    fn aur_results_by_popularity_then_prefix() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type": "search", "results": [
+                {"Name": "code-oss-bin", "Version": "1-1", "NumVotes": 1, "Popularity": 0.1,
+                 "Description": "Old", "OutOfDate": 1700000000},
+                {"Name": "visual-studio-code-bin", "Version": "1.146.0-1", "NumVotes": 1713,
+                 "Popularity": 11.9, "Description": "VS Code ", "OutOfDate": null},
+                {"Version": "no name"}
+            ]}"#,
+        )
+        .unwrap();
+        let r = aur_results("vis", &v);
+        assert_eq!(names(&r), ["visual-studio-code-bin", "code-oss-bin"]);
+        assert_eq!(desc(&r[0]), "AUR 1.146.0-1 · 1713 votes · VS Code");
+        assert_eq!(desc(&r[1]), "AUR 1-1 · 1 vote · out of date · Old");
+        assert_eq!(names(&aur_results("code", &v))[0], "code-oss-bin");
+
+        let err = serde_json::json!({"type": "error", "error": "Too many package results.", "results": []});
+        assert!(aur_results("py", &err).is_empty());
+    }
+
+    /// Each spec wires its package argument to the right generators.
+    #[test]
+    fn specs_use_pacman_generators() {
+        for (cmd, expect) in [
+            ("pacman", &["pacman:packages", "pacman:files"][..]),
+            ("yay", &["pacman:packages", "pacman:files", "online:aur"][..]),
+            ("paru", &["pacman:packages", "pacman:files", "online:aur"][..]),
+        ] {
+            let spec = crate::specs::builtin(cmd).unwrap();
+            let ids: Vec<&str> = spec.args[0].generators.iter().map(|g| g.id.as_str()).collect();
+            assert_eq!(ids, expect, "{cmd}");
+            assert!(spec.args[0].is_optional && spec.args[0].is_variadic, "{cmd}");
+        }
     }
 }
 
